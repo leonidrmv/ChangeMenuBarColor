@@ -1,6 +1,6 @@
 //
-//  File.swift
-//  
+//  Log.swift
+//  ChangeMenuBarColor
 //
 //  Created by Igor Kulman on 14.12.2020.
 //
@@ -8,9 +8,9 @@
 import Foundation
 import Rainbow
 
-final class Log {
+enum Log: Sendable {
     static func error(_ message: String) {
-        print(message.red)
+        print(message.red.bold)
     }
 
     static func info(_ message: String) {
@@ -18,6 +18,10 @@ final class Log {
     }
 
     static func debug(_ message: String) {
-        print(message)
+        print(message.dim)
+    }
+
+    static func warning(_ message: String) {
+        print(message.yellow)
     }
 }

@@ -11,13 +11,28 @@
 import Foundation
 import Cocoa
 
+@MainActor
 func createGradientImage(startColor: NSColor, endColor: NSColor, width: CGFloat, height: CGFloat) -> NSImage? {
     guard let context = createContext(width: width, height: height) else {
         Log.error("Could not create graphical context for gradient image")
         return nil
     }
 
-    context.drawLinearGradient(CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: [startColor.cgColor, endColor.cgColor] as CFArray, locations: [0.0, 1.0])!, start: CGPoint(x: 0, y: 0), end: CGPoint(x: width, y: 0), options: [])
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let colors = [startColor.cgColor, endColor.cgColor] as CFArray
+    let locations: [CGFloat] = [0.0, 1.0]
+
+    guard let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: locations) else {
+        Log.error("Could not create gradient")
+        return nil
+    }
+
+    context.drawLinearGradient(
+        gradient,
+        start: CGPoint(x: 0, y: 0),
+        end: CGPoint(x: width, y: 0),
+        options: []
+    )
 
     guard let composedImage = context.makeImage() else {
         Log.error("Could not create composed image for gradient image")
@@ -27,6 +42,7 @@ func createGradientImage(startColor: NSColor, endColor: NSColor, width: CGFloat,
     return NSImage(cgImage: composedImage, size: CGSize(width: width, height: height))
 }
 
+@MainActor
 func createSolidImage(color: NSColor, width: CGFloat, height: CGFloat) -> NSImage? {
     guard let context = createContext(width: width, height: height) else {
         Log.error("Could not create graphical context for solid color image")
@@ -44,13 +60,13 @@ func createSolidImage(color: NSColor, width: CGFloat, height: CGFloat) -> NSImag
     return NSImage(cgImage: composedImage, size: CGSize(width: width, height: height))
 }
 
+@MainActor
 func combineImages(baseImage: NSImage, addedImage: NSImage) -> NSImage? {
-    // Create a high-quality representation context
     let width = baseImage.size.width
     let height = baseImage.size.height
-    
-    // Create bitmap representation with higher quality options
-    let rep = NSBitmapImageRep(
+
+    // Create bitmap representation with high-quality settings
+    guard let bitmapRep = NSBitmapImageRep(
         bitmapDataPlanes: nil,
         pixelsWide: Int(width),
         pixelsHigh: Int(height),
@@ -58,77 +74,91 @@ func combineImages(baseImage: NSImage, addedImage: NSImage) -> NSImage? {
         samplesPerPixel: 4,
         hasAlpha: true,
         isPlanar: false,
-        colorSpaceName: .calibratedRGB,
+        colorSpaceName: .deviceRGB,
         bytesPerRow: 0,
         bitsPerPixel: 0
-    )
-    
-    rep?.size = NSSize(width: width, height: height)
-    
-    // Create drawing context
+    ) else {
+        Log.error("Could not create bitmap representation when merging images")
+        return nil
+    }
+
+    bitmapRep.size = NSSize(width: width, height: height)
+
     NSGraphicsContext.saveGraphicsState()
-    guard let rep = rep, let context = NSGraphicsContext(bitmapImageRep: rep) else {
+    guard let context = NSGraphicsContext(bitmapImageRep: bitmapRep) else {
         Log.error("Could not create graphics context when merging images")
         NSGraphicsContext.restoreGraphicsState()
         return nil
     }
     NSGraphicsContext.current = context
-    
+
     // Draw the base image (wallpaper) at full quality
-    baseImage.draw(in: NSRect(x: 0, y: 0, width: width, height: height),
-                  from: NSRect(x: 0, y: 0, width: baseImage.size.width, height: baseImage.size.height),
-                  operation: .copy,
-                  fraction: 1.0)
-    
-    // Determine proper menu bar height - use a reasonable default if needed
-    let scaleFactor = NSScreen.main?.backingScaleFactor ?? 2.0
-    let menuBarHeight = min(addedImage.size.height, 24 * scaleFactor)
-    
-    // Draw the menu bar portion with high quality
-    addedImage.draw(in: NSRect(x: 0, y: height - menuBarHeight, width: width, height: menuBarHeight),
-                   from: NSRect(x: 0, y: 0, width: addedImage.size.width, height: menuBarHeight),
-                   operation: .sourceOver,
-                   fraction: 1.0)
-    
+    let baseRect = NSRect(x: 0, y: 0, width: width, height: height)
+    baseImage.draw(in: baseRect, from: .zero, operation: .copy, fraction: 1.0)
+
+    // Use the actual menu bar height from the added image
+    // The added image was created with the correct menu bar height for the screen
+    let menuBarHeight = addedImage.size.height
+
+    Log.debug("Combining images - Menu bar overlay height: \(menuBarHeight)px")
+
+    // Draw the menu bar portion at the top of the image
+    let menuBarRect = NSRect(x: 0, y: height - menuBarHeight, width: width, height: menuBarHeight)
+    let sourceRect = NSRect(x: 0, y: 0, width: addedImage.size.width, height: menuBarHeight)
+    addedImage.draw(in: menuBarRect, from: sourceRect, operation: .sourceOver, fraction: 1.0)
+
     NSGraphicsContext.restoreGraphicsState()
-    
+
     // Create final image from the bitmap representation
     let finalImage = NSImage(size: NSSize(width: width, height: height))
-    finalImage.addRepresentation(rep)
-    
+    finalImage.addRepresentation(bitmapRep)
+
     return finalImage
 }
 
 func createContext(width: CGFloat, height: CGFloat) -> CGContext? {
-    return CGContext(data: nil, width: Int(width), height: Int(height), bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue
+
+    return CGContext(
+        data: nil,
+        width: Int(width),
+        height: Int(height),
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: bitmapInfo
+    )
 }
 
+@MainActor
 func colorName(_ color: NSColor) -> String {
-    if #available(OSX 11.0, *) {
+    #if canImport(Accessibility)
+    if #available(macOS 11.0, *) {
         return AXNameFromColor(color.cgColor)
-    } else {
-        return color.description
     }
+    #endif
+    return color.description
 }
 
+@MainActor
 func getOriginalWallpaper(for screen: NSScreen) -> NSImage? {
-    let workspace = NSWorkspace.shared
-    if let url = workspace.desktopImageURL(for: screen) {
-        do {
-            let imageData = try Data(contentsOf: url)
-            if let image = NSImage(data: imageData) {
-                Log.debug("Successfully loaded original wallpaper from \(url.path)")
-                return image
-            } else {
-                Log.error("Failed to convert data to NSImage")
-                return nil
-            }
-        } catch {
-            Log.error("Failed to load original wallpaper: \(error)")
+    guard let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
+        Log.error("Could not get desktop image URL")
+        return nil
+    }
+
+    do {
+        let imageData = try Data(contentsOf: url)
+        guard let image = NSImage(data: imageData) else {
+            Log.error("Failed to convert data to NSImage")
             return nil
         }
-    } else {
-        Log.error("Could not get desktop image URL")
+
+        Log.debug("Successfully loaded original wallpaper from \(url.path)")
+        return image
+    } catch {
+        Log.error("Failed to load original wallpaper: \(error.localizedDescription)")
         return nil
     }
 }

@@ -5,37 +5,58 @@
 //  Created by Igor Kulman on 19.11.2020.
 //
 
-import ArgumentParser
+@preconcurrency import ArgumentParser
 import Files
 import Foundation
 import Cocoa
 
+@MainActor
 class Command {
     func createWallpaper(screen: NSScreen) -> NSImage? {
         fatalError("Override for each type")
     }
 
-    var useAllDisplays: Bool {
+    nonisolated var useAllDisplays: Bool {
         fatalError("Override for each type")
     }
 
-    func run() {
+    nonisolated func run() throws {
+        // ArgumentParser calls run() on the main thread, so we can use assumeIsolated
+        // This is safe because AppKit requires main thread anyway
+        try MainActor.assumeIsolated {
+            try self.runMainActor()
+        }
+    }
+
+    private func runMainActor() throws {
         Log.info("Starting up\n")
 
         let screens: [NSScreen] = useAllDisplays ? NSScreen.screens : [NSScreen.main].compactMap({ $0 })
 
         guard !screens.isEmpty else {
             Log.error("Could not detect any screens")
-            return
+            throw WallpaperError.noScreensDetected
         }
 
+        Log.info("Found \(screens.count) screen(s) to process")
         for (index, screen) in screens.enumerated() {
-            guard let adjustedWallpaper = createWallpaper(screen: screen), let data = adjustedWallpaper.jpgData else {
+            Log.debug("\nScreen \(index + 1):")
+            Log.debug(screen.displayInfo)
+            guard let adjustedWallpaper = createWallpaper(screen: screen) else {
                 Log.error("Could not generate new wallpaper screen \(index)")
                 continue
             }
 
-            setWallpaper(screen: screen, wallpaper: data)
+            guard let data = adjustedWallpaper.jpgData else {
+                Log.error("Could not convert wallpaper to JPEG data for screen \(index)")
+                continue
+            }
+
+            do {
+                try setWallpaper(screen: screen, wallpaper: data)
+            } catch {
+                Log.error("Failed to set wallpaper for screen \(index): \(error.localizedDescription)")
+            }
         }
 
         Log.info("\nAll done!")
@@ -70,33 +91,50 @@ class Command {
         return wallpaper
     }
 
-    private func setWallpaper(screen: NSScreen, wallpaper: Data) {
-        guard let supportFiles = try? Folder.library?.subfolder(at: "Application Support"), let workingDirectory = try? supportFiles.createSubfolderIfNeeded(at: "ChangeMenuBarColor") else {
-            Log.error("Cannot access Application Support folder")
+    private func setWallpaper(screen: NSScreen, wallpaper: Data) throws {
+        guard let supportFiles = try? Folder.library?.subfolder(at: "Application Support"),
+              let workingDirectory = try? supportFiles.createSubfolderIfNeeded(at: "ChangeMenuBarColor") else {
+            throw WallpaperError.cannotAccessApplicationSupport
+        }
+
+        let generatedWallpaperFile = workingDirectory.url.appendingPathComponent("wallpaper-screen-adjusted-\(UUID().uuidString).jpg")
+        try? FileManager.default.removeItem(at: generatedWallpaperFile)
+
+        try wallpaper.write(to: generatedWallpaperFile, options: .atomic)
+        Log.debug("Created new wallpaper for the main screen in \(generatedWallpaperFile.absoluteString)")
+
+        try NSWorkspace.shared.setDesktopImageURL(generatedWallpaperFile, for: screen, options: [:])
+        Log.info("Wallpaper set")
+
+        // Clean up old wallpaper files
+        let oldWallpaperFiles = workingDirectory.files.filter { $0.url != generatedWallpaperFile }
+        guard !oldWallpaperFiles.isEmpty else {
             return
         }
 
-        do {
-            let generatedWallpaperFile = workingDirectory.url.appendingPathComponent("wallpaper-screen-adjusted-\(UUID().uuidString).jpg")
-            try? FileManager.default.removeItem(at: generatedWallpaperFile)
+        Log.info("Deleting old wallpaper files from previous runs")
+        for file in oldWallpaperFiles {
+            try? file.delete()
+        }
+    }
+}
 
-            try wallpaper.write(to: generatedWallpaperFile)
-            Log.debug("Created new wallpaper for the main screen in \(generatedWallpaperFile.absoluteString)")
+enum WallpaperError: Error, LocalizedError {
+    case noScreensDetected
+    case cannotAccessApplicationSupport
+    case cannotReadWallpaper
+    case invalidHexColor
 
-            try NSWorkspace.shared.setDesktopImageURL(generatedWallpaperFile, for: screen, options: [:])
-            Log.info("Wallpaper set")
-
-            let oldWallpaperFiles = workingDirectory.files.filter({ $0.url != generatedWallpaperFile })
-            guard !oldWallpaperFiles.isEmpty else {
-                return
-            }
-
-            Log.info("Deleting old wallpaper files from previous runs")
-            oldWallpaperFiles.forEach {
-                try? $0.delete()
-            }
-        } catch {
-            Log.error("Writing new wallpaper file failed with \(error.localizedDescription) for the main screen")
+    var errorDescription: String? {
+        switch self {
+        case .noScreensDetected:
+            return "Could not detect any screens"
+        case .cannotAccessApplicationSupport:
+            return "Cannot access Application Support folder"
+        case .cannotReadWallpaper:
+            return "Cannot read the wallpaper file"
+        case .invalidHexColor:
+            return "Invalid HEX color provided. Make sure it includes the '#' symbol, e.g: #FF0000"
         }
     }
 }

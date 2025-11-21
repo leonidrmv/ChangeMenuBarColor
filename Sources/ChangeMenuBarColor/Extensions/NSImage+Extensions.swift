@@ -10,42 +10,61 @@ import Cocoa
 
 extension NSImage {
     var cgImage: CGImage? {
-        var rect = CGRect.init(origin: .zero, size: self.size)
+        var rect = CGRect(origin: .zero, size: self.size)
         return self.cgImage(forProposedRect: &rect, context: nil, hints: nil)
     }
 
     var jpgData: Data? {
-        guard let tiffRepresentation = tiffRepresentation, let bitmapImage = NSBitmapImageRep(data: tiffRepresentation) else {
-            Log.error("Cannot create data from bitmap image")
+        guard let cgImage = self.cgImage else {
+            Log.error("Cannot create CGImage from NSImage")
             return nil
         }
 
-        return bitmapImage.representation(using: .jpeg, properties: [NSBitmapImageRep.PropertyKey.compressionFactor : 1])
-    }
-    
-    func copy(size: NSSize) -> NSImage? {
-        // Create a new rect with given width and height
-        let frame = NSMakeRect(0, 0, size.width, size.height)
-        
-        // Get the best representation for the given size.
-        guard let rep = self.bestRepresentation(for: frame, context: nil, hints: nil) else {
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        bitmapRep.size = self.size
+
+        guard let jpegData = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 1.0]) else {
+            Log.error("Cannot create JPEG data from bitmap image")
             return nil
         }
-        
-        // Create an empty image with the given size.
-        let img = NSImage(size: size)
-        
-        // Set the drawing context and make sure to remove the focus before returning.
-        img.lockFocus()
-        defer { img.unlockFocus() }
-        
-        // Draw the new image
-        if rep.draw(in: frame) {
-            return img
+
+        return jpegData
+    }
+
+    func copy(size: NSSize) -> NSImage? {
+        let frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+
+        guard let bitmapRep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return nil
         }
-        
-        // Return nil in case something went wrong.
-        return nil
+
+        bitmapRep.size = size
+
+        NSGraphicsContext.saveGraphicsState()
+        guard let context = NSGraphicsContext(bitmapImageRep: bitmapRep) else {
+            NSGraphicsContext.restoreGraphicsState()
+            return nil
+        }
+        NSGraphicsContext.current = context
+
+        self.draw(in: frame)
+
+        NSGraphicsContext.restoreGraphicsState()
+
+        let result = NSImage(size: size)
+        result.addRepresentation(bitmapRep)
+        return result
     }
     
     func resizeWhileMaintainingAspectRatioToSize(size: NSSize) -> NSImage? {
@@ -82,33 +101,43 @@ extension NSImage {
         // Get some points to center the cropping area.
         let x = floor((resized.size.width - size.width) / 2)
         let y = floor((resized.size.height - size.height) / 2)
-        
+
         // Create the cropping frame.
-        let frame = NSMakeRect(x, y, size.width, size.height)
-        
-        // Get the best representation of the image for the given cropping frame.
-        guard let rep = resized.bestRepresentation(for: frame, context: nil, hints: nil) else {
+        let cropRect = NSRect(x: x, y: y, width: size.width, height: size.height)
+
+        // Create bitmap representation for high-quality cropping
+        guard let bitmapRep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
             return nil
         }
-        
-        // Create a new image with the new size
-        let img = NSImage(size: size)
-        
-        img.lockFocus()
-        defer { img.unlockFocus() }
-        
-        if rep.draw(in: NSMakeRect(0, 0, size.width, size.height),
-                    from: frame,
-                    operation: NSCompositingOperation.copy,
-                    fraction: 1.0,
-                    respectFlipped: false,
-                    hints: [:]) {
-            // Return the cropped image.
-            return img
+
+        bitmapRep.size = size
+
+        NSGraphicsContext.saveGraphicsState()
+        guard let context = NSGraphicsContext(bitmapImageRep: bitmapRep) else {
+            NSGraphicsContext.restoreGraphicsState()
+            return nil
         }
-        
-        // Return nil in case anything fails.
-        return nil
+        NSGraphicsContext.current = context
+
+        let destRect = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+        resized.draw(in: destRect, from: cropRect, operation: .copy, fraction: 1.0)
+
+        NSGraphicsContext.restoreGraphicsState()
+
+        let result = NSImage(size: size)
+        result.addRepresentation(bitmapRep)
+        return result
     }
 
     // Images loaded from file sometimes do not report the size correctly, see https://stackoverflow.com/questions/9264051/nsimage-size-not-real-size-with-some-pictures
